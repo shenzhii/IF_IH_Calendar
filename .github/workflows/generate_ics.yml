@@ -1,41 +1,41 @@
 name: Generate ICS
 
-# 定时触发 + 手动触发
+# 每周一自动运行 + 手动触发
 on:
   schedule:
-    - cron: '0 0 * * 0'  # 每周日 00:00 UTC 运行
-  workflow_dispatch:      # 支持手动触发
-
-permissions:
-  contents: write
+    - cron: '0 2 * * 1'  # 每周一凌晨 2 点运行
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 兼容 Node.js 24
-
     steps:
-      # 获取仓库代码
+      # 1. 拉取仓库代码
       - name: Checkout repository
-        uses: actions/checkout@v4   # 最新版本，兼容 Node.js 24
+        uses: actions/checkout@v3
 
-      # 设置 Python
-      - name: Setup Python
-        uses: actions/setup-python@v5   # 最新版本，兼容 Node.js 24
+      # 2. 设置 Python 环境
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: 3.x
+          python-version: '3.11'
 
-      # 生成 ICS
+      # 3. 安装 Python 依赖
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      # 4. 运行 ICS 生成脚本
       - name: Generate ICS
         run: python scripts/generate_ics.py
 
-      # 提交 ICS 文件
-      - name: Commit ICS
+      # 5. 提交并推送 ICS 文件
+      - name: Commit and push ICS
         run: |
-          git config --local user.name "github-actions"
-          git config --local user.email "github-actions@github.com"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
           git add IF_IH.ics
-          git commit -m "更新 ICS 文件 [自动生成]" || echo "No changes to commit"
+          git commit -m "自动更新 ICS 文件"
           git push
