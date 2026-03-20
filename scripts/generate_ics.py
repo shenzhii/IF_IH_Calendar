@@ -1,96 +1,44 @@
-import requests
-from bs4 import BeautifulSoup
+import json
 from datetime import datetime, timedelta
 import calendar
-import re
 
-BASE_URL = "https://www.sse.com.cn"
-LIST_URL = "https://www.sse.com.cn/disclosure/dealinstruc/closed/"
+# ===== 读取休市和调休数据 =====
+with open("holidays.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-def fetch_announcement_urls():
-    resp = requests.get(LIST_URL, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    urls = []
-    for a in soup.select("a[href*='/disclosure/dealinstruc/closed/']"):
-        href = a.get("href", "")
-        if href.endswith(".shtml"):
-            full = BASE_URL + href
-            if full not in urls:
-                urls.append(full)
-    return urls
+HOLIDAYS = [(datetime.strptime(s, "%Y-%m-%d").date(), datetime.strptime(e, "%Y-%m-%d").date())
+            for s, e in data.get("holidays", [])]
+WORKDAYS = [datetime.strptime(d, "%Y-%m-%d").date() for d in data.get("workdays", [])]
 
-def parse_holiday_ranges(url):
-    holidays = []
-    workdays = []
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text(separator="\n").replace("（", "(").replace("）", ")").replace(" ", " ")
-        
-        year = datetime.now().year
-        # 匹配休市区间
-        patterns = re.findall(r"(\d{1,2})月(\d{1,2})日.*?至.*?(\d{1,2})月(\d{1,2})日", text)
-        for m1, d1, m2, d2 in patterns:
-            try:
-                start = datetime(year, int(m1), int(d1)).date()
-                end   = datetime(year, int(m2), int(d2)).date()
-                holidays.append((start, end))
-            except:
-                continue
-        # 匹配调休工作日
-        work_patterns = re.findall(r"(\d{1,2})月(\d{1,2})日.*?补(上班|工作)", text)
-        for m, d, _ in work_patterns:
-            try:
-                wd = datetime(year, int(m), int(d)).date()
-                workdays.append(wd)
-            except:
-                continue
-    except:
-        pass
-    return holidays, workdays
-
-def get_holiday_and_workdays():
-    urls = fetch_announcement_urls()
-    all_holidays = []
-    all_workdays = []
-    for url in urls:
-        h, w = parse_holiday_ranges(url)
-        for r in h:
-            if r not in all_holidays:
-                all_holidays.append(r)
-        for d in w:
-            if d not in all_workdays:
-                all_workdays.append(d)
-    return all_holidays, all_workdays
-
-def is_trading_day(date, holidays, workdays):
-    if date in workdays:
+# ===== 判断是否交易日 =====
+def is_trading_day(date):
+    if date in WORKDAYS:
         return True
     if date.weekday() >= 5:
         return False
-    for start, end in holidays:
+    for start, end in HOLIDAYS:
         if start <= date <= end:
             return False
     return True
 
-def get_settlement_date(year, month, holidays, workdays):
+# ===== 获取交割日，顺延到下一个交易日 =====
+def get_settlement_date(year, month):
     c = calendar.monthcalendar(year, month)
     if c[0][calendar.FRIDAY] != 0:
         day = c[2][calendar.FRIDAY]
     else:
         day = c[3][calendar.FRIDAY]
     dt = datetime(year, month, day)
-    while not is_trading_day(dt.date(), holidays, workdays):
+    while not is_trading_day(dt.date()):
         dt += timedelta(days=1)
     return dt
 
+# ===== 日期格式化 =====
 def format_dt(dt):
     return dt.strftime("%Y%m%dT%H%M%S")
 
+# ===== 生成 ICS =====
 def generate_ics(years):
-    holidays, workdays = get_holiday_and_workdays()
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
     lines = [
         "BEGIN:VCALENDAR",
@@ -102,11 +50,11 @@ def generate_ics(years):
 
     for year in years:
         for month in range(1, 13):
-            settle = get_settlement_date(year, month, holidays, workdays)
+            settle = get_settlement_date(year, month)
             date_str = settle.strftime("%Y%m%d")
             prev = settle - timedelta(days=1)
 
-            # 风险日
+            # ===== 交割前一日（高波动风险）=====
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:risk-{date_str}",
@@ -120,7 +68,7 @@ def generate_ics(years):
                 "END:VEVENT"
             ]
 
-            # 交割日
+            # ===== 交割日（全天）=====
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:settle-{date_str}",
@@ -134,7 +82,7 @@ def generate_ics(years):
                 "END:VEVENT"
             ]
 
-            # 尾盘窗口
+            # ===== 尾盘结算窗口 =====
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:close-{date_str}",
@@ -151,6 +99,7 @@ def generate_ics(years):
     lines.append("END:VCALENDAR")
     return "\n".join(lines)
 
+# ===== 主程序 =====
 if __name__ == "__main__":
     years = list(range(2026, 2036))
     content = generate_ics(years)
