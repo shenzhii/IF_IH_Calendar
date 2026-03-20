@@ -1,25 +1,43 @@
 name: Generate ICS
 
+# 定时触发 + 手动触发
 on:
   schedule:
-    - cron: "0 0 1 1 *"
-  workflow_dispatch:
+    - cron: '0 0 * * 0'  # 每周日 00:00 UTC 运行
+  workflow_dispatch:      # 支持手动触发
+
+# 授权写权限
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
+      # 获取仓库代码
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 设置 Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: 3.x
+
+      # 安装依赖（如果脚本有依赖，可在这里加 pip install）
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+
+      # 生成 ICS
       - name: Generate ICS
         run: python scripts/generate_ics.py
+
+      # 提交 ICS 文件
       - name: Commit ICS
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
           git add IF_IH.ics
-          git commit -m "Update ICS file"
+          git commit -m "更新 ICS 文件 [自动生成]" || echo "No changes to commit"
           git push
