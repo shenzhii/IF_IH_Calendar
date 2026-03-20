@@ -1,41 +1,36 @@
 name: Generate ICS
 
-# 每周一自动运行 + 手动触发
 on:
-  schedule:
-    - cron: '0 2 * * 1'  # 每周一凌晨 2 点运行
-  workflow_dispatch:
+  push:
+    paths:
+      - 'holidays.json'   # 只要更新了休市 JSON 就触发
+  workflow_dispatch:     # 支持手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 拉取仓库代码
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      # 2. 设置 Python 环境
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
 
-      # 3. 安装 Python 依赖
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt || true  # 如果有 requests/bs4 等
 
-      # 4. 运行 ICS 生成脚本
-      - name: Generate ICS
-        run: python scripts/generate_ics.py
+    - name: Generate ICS
+      run: python scripts/generate_ics.py
 
-      # 5. 提交并推送 ICS 文件
-      - name: Commit and push ICS
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add IF_IH.ics
-          git commit -m "自动更新 ICS 文件"
-          git push
+    - name: Commit and push ICS
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@users.noreply.github.com"
+        git add IF_IH.ics
+        git commit -m "更新 ICS 文件 [skip ci]" || echo "No changes to commit"
+        git push
