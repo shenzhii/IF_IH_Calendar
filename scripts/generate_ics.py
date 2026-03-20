@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import calendar
 import re
 
-# ===== 抓取 SSE 官方休市安排公告列表 =====
 BASE_URL = "https://www.sse.com.cn"
 LIST_URL = "https://www.sse.com.cn/disclosure/dealinstruc/closed/"
 
@@ -21,37 +20,54 @@ def fetch_announcement_urls():
                 urls.append(full)
     return urls
 
-# ===== 解析公告休市区间 =====
 def parse_holiday_ranges(url):
     holidays = []
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    text = soup.get_text(separator="\n")
-    patterns = re.findall(r"(\d{1,2}月\d{1,2}日).{0,15}至.{0,15}(\d{1,2}月\d{1,2}日)", text)
-    year = datetime.now().year
-    for a, b in patterns:
-        try:
-            start = datetime.strptime(f"{year}{a}", "%Y%m%d")
-            end   = datetime.strptime(f"{year}{b}", "%Y%m%d")
-            holidays.append((start.date(), end.date()))
-        except:
-            continue
-    return holidays
+    workdays = []
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        text = soup.get_text(separator="\n").replace("（", "(").replace("）", ")").replace(" ", " ")
+        
+        year = datetime.now().year
+        # 匹配休市区间
+        patterns = re.findall(r"(\d{1,2})月(\d{1,2})日.*?至.*?(\d{1,2})月(\d{1,2})日", text)
+        for m1, d1, m2, d2 in patterns:
+            try:
+                start = datetime(year, int(m1), int(d1)).date()
+                end   = datetime(year, int(m2), int(d2)).date()
+                holidays.append((start, end))
+            except:
+                continue
+        # 匹配调休工作日
+        work_patterns = re.findall(r"(\d{1,2})月(\d{1,2})日.*?补(上班|工作)", text)
+        for m, d, _ in work_patterns:
+            try:
+                wd = datetime(year, int(m), int(d)).date()
+                workdays.append(wd)
+            except:
+                continue
+    except:
+        pass
+    return holidays, workdays
 
-# ===== 合并所有解析结果 =====
-def get_holiday_ranges():
+def get_holiday_and_workdays():
     urls = fetch_announcement_urls()
-    all_ranges = []
+    all_holidays = []
+    all_workdays = []
     for url in urls:
-        rs = parse_holiday_ranges(url)
-        for r in rs:
-            if r not in all_ranges:
-                all_ranges.append(r)
-    return all_ranges
+        h, w = parse_holiday_ranges(url)
+        for r in h:
+            if r not in all_holidays:
+                all_holidays.append(r)
+        for d in w:
+            if d not in all_workdays:
+                all_workdays.append(d)
+    return all_holidays, all_workdays
 
-# ===== 判断是否交易日（排除周末和休市区间） =====
-def is_trading_day(date, holidays):
+def is_trading_day(date, holidays, workdays):
+    if date in workdays:
+        return True
     if date.weekday() >= 5:
         return False
     for start, end in holidays:
@@ -59,15 +75,14 @@ def is_trading_day(date, holidays):
             return False
     return True
 
-# ===== 获取交割日并顺延到下一个交易日 =====
-def get_settlement_date(year, month, holidays):
+def get_settlement_date(year, month, holidays, workdays):
     c = calendar.monthcalendar(year, month)
     if c[0][calendar.FRIDAY] != 0:
         day = c[2][calendar.FRIDAY]
     else:
         day = c[3][calendar.FRIDAY]
     dt = datetime(year, month, day)
-    while not is_trading_day(dt.date(), holidays):
+    while not is_trading_day(dt.date(), holidays, workdays):
         dt += timedelta(days=1)
     return dt
 
@@ -75,9 +90,8 @@ def format_dt(dt):
     return dt.strftime("%Y%m%dT%H%M%S")
 
 def generate_ics(years):
-    holidays = get_holiday_ranges()
+    holidays, workdays = get_holiday_and_workdays()
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
-
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -88,16 +102,11 @@ def generate_ics(years):
 
     for year in years:
         for month in range(1, 13):
-            settle = get_settlement_date(year, month, holidays)
+            settle = get_settlement_date(year, month, holidays, workdays)
             date_str = settle.strftime("%Y%m%d")
             prev = settle - timedelta(days=1)
 
-            risk_start = prev.replace(hour=0, minute=0, second=0)
-            risk_end   = settle.replace(hour=0, minute=0, second=0)
-            close_start= settle.replace(hour=14, minute=30, second=0)
-            close_end  = settle.replace(hour=15, minute=0, second=0)
-
-            # 交割前一日（风险）
+            # 风险日
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:risk-{date_str}",
@@ -106,12 +115,12 @@ def generate_ics(years):
                 "DESCRIPTION:多空博弈升温，注意减仓/控制风险",
                 "STATUS:CONFIRMED",
                 "TRANSP:OPAQUE",
-                f"DTSTART:{format_dt(risk_start)}",
-                f"DTEND:{format_dt(risk_end)}",
+                f"DTSTART:{format_dt(prev.replace(hour=0, minute=0, second=0))}",
+                f"DTEND:{format_dt(settle.replace(hour=0, minute=0, second=0))}",
                 "END:VEVENT"
             ]
 
-            # 交割日（全天）
+            # 交割日
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:settle-{date_str}",
@@ -125,7 +134,7 @@ def generate_ics(years):
                 "END:VEVENT"
             ]
 
-            # 尾盘结算窗口
+            # 尾盘窗口
             lines += [
                 "BEGIN:VEVENT",
                 f"UID:close-{date_str}",
@@ -134,8 +143,8 @@ def generate_ics(years):
                 "DESCRIPTION:14:30-15:00 结算博弈趋势波动",
                 "STATUS:CONFIRMED",
                 "TRANSP:OPAQUE",
-                f"DTSTART:{format_dt(close_start)}",
-                f"DTEND:{format_dt(close_end)}",
+                f"DTSTART:{format_dt(settle.replace(hour=14, minute=30, second=0))}",
+                f"DTEND:{format_dt(settle.replace(hour=15, minute=0, second=0))}",
                 "END:VEVENT"
             ]
 
@@ -147,4 +156,4 @@ if __name__ == "__main__":
     content = generate_ics(years)
     with open("IF_IH.ics", "w", encoding="utf-8") as f:
         f.write(content)
-    print("自动避开休市安排的 ICS 文件已生成")
+    print("完全避开休市和调休的 ICS 文件已生成")
